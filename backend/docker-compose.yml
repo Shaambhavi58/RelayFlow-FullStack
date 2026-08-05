@@ -1,0 +1,108 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: relayflow
+      POSTGRES_PASSWORD: relayflow
+      POSTGRES_DB: relayflow
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U relayflow -d relayflow"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    volumes:
+      - relayflow_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "nc -z 127.0.0.1 5672 && nc -z 127.0.0.1 15672"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 90s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    volumes:
+      - relayflow_redis:/data
+    restart: unless-stopped
+
+  api:
+    build: .
+    init: true
+    environment: &relayflow-env
+      RELAYFLOW_DATABASE_URL: postgresql+psycopg://relayflow:relayflow@postgres:5432/relayflow
+      RELAYFLOW_RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      RELAYFLOW_REDIS_URL: redis://redis:6379/0
+      RELAYFLOW_BROKER_ENABLED: "true"
+      RELAYFLOW_JWT_SECRET: ${RELAYFLOW_JWT_SECRET:-local-development-secret-change-me}
+      RELAYFLOW_BOOTSTRAP_ADMIN_EMAIL: ${RELAYFLOW_ADMIN_EMAIL:-admin@relayflow.local}
+      RELAYFLOW_BOOTSTRAP_ADMIN_PASSWORD: ${RELAYFLOW_ADMIN_PASSWORD:-relayflow-admin}
+      RELAYFLOW_CORS_ORIGINS: http://localhost:3000,http://localhost:5173
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker-1:
+    build: .
+    init: true
+    command: ["python", "-m", "relayflow.worker"]
+    environment:
+      <<: *relayflow-env
+      RELAYFLOW_WORKER_ID: worker-1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker-2:
+    build: .
+    init: true
+    command: ["python", "-m", "relayflow.worker"]
+    environment:
+      <<: *relayflow-env
+      RELAYFLOW_WORKER_ID: worker-2
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  relayflow_data:
+  relayflow_redis:

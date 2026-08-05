@@ -1,0 +1,31 @@
+{
+  "name": "order-fulfillment",
+  "description": "Fan-out payment and inventory checks, then notify the customer",
+  "tasks": [
+    {
+      "key": "validate_order",
+      "type": "transform",
+      "config": {"value": "order {{ input.order_id }} validated"}
+    },
+    {
+      "key": "reserve_inventory",
+      "type": "delay",
+      "depends_on": ["validate_order"],
+      "config": {"seconds": 1},
+      "retry": {"max_attempts": 3, "backoff_seconds": 2}
+    },
+    {
+      "key": "process_payment",
+      "type": "delay",
+      "depends_on": ["validate_order"],
+      "config": {"seconds": 1}
+    },
+    {
+      "key": "confirmation",
+      "type": "transform",
+      "depends_on": ["reserve_inventory", "process_payment"],
+      "config": {"value": "Order completed"}
+    }
+  ]
+}
+

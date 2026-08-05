@@ -1,0 +1,43 @@
+[project]
+name = "relayflow"
+version = "0.1.0"
+description = "Distributed, durable DAG workflow orchestration platform"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.30,<1",
+  "sqlalchemy>=2.0,<3",
+  "psycopg[binary]>=3.2,<4",
+  "pydantic-settings>=2.6,<3",
+  "httpx>=0.27,<1",
+  "aio-pika>=9.5,<10",
+  "pika>=1.3,<2",
+  "redis>=5,<6",
+  "PyJWT>=2.10,<3",
+  "pwdlib[argon2]>=0.2,<1",
+  "prometheus-client>=0.21,<1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<9", "ruff>=0.8,<1"]
+
+[project.scripts]
+relayflow-api = "relayflow.main:run"
+relayflow-worker = "relayflow.worker:run"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+ignore = [
+  "B008", # FastAPI dependency injection intentionally uses Depends in defaults
+  "BLE001", # Workers must convert arbitrary executor failures into retry state
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
