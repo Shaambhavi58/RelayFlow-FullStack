@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   Activity,
   Bell,
@@ -172,7 +172,12 @@ export default function Home() {
   const [profileOpen, setProfileOpen] = useState(false);
   const [profileModal, setProfileModal] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
-  const [signedOut, setSignedOut] = useState(false);
+  const [authenticated, setAuthenticated] = useState(false);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [loginEmail, setLoginEmail] = useState("admin@relayflow.local");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [loginLoading, setLoginLoading] = useState(false);
   const [displayName, setDisplayName] = useState("Shaambhavi");
   const [settings, setSettings] = useState({ workspaceName: "Acme systems", retention: "30", maxRetries: "3", alerts: true, failedRunAlerts: true });
   const [workflowName, setWorkflowName] = useState("Data import pipeline");
@@ -182,23 +187,18 @@ export default function Home() {
     { name: "Validate rows", dependency: "Import orders", action: "Transform" },
   ]);
   useEffect(() => {
+    setAuthenticated(Boolean(sessionStorage.getItem("relayflow-token")));
+    setAuthChecked(true);
+  }, []);
+
+  useEffect(() => {
+    if (!authenticated) return;
     const api = process.env.NEXT_PUBLIC_RELAYFLOW_API_URL || "http://localhost:8000";
     let active = true;
     const refresh = async () => {
       try {
-        let token = sessionStorage.getItem("relayflow-token");
-        if (!token) {
-          const login = await fetch(`${api}/api/v1/auth/login`, {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              email: process.env.NEXT_PUBLIC_RELAYFLOW_EMAIL || "admin@relayflow.local",
-              password: process.env.NEXT_PUBLIC_RELAYFLOW_PASSWORD || "relayflow-admin",
-            }),
-          });
-          if (!login.ok) throw new Error("Login failed");
-          token = (await login.json()).access_token;
-          sessionStorage.setItem("relayflow-token", token as string);
-        }
+        const token = sessionStorage.getItem("relayflow-token");
+        if (!token) throw new Error("Missing session");
         const headers = { Authorization: `Bearer ${token}` };
         const [dashboardResponse, runsResponse] = await Promise.all([
           fetch(`${api}/api/v1/dashboard`, { headers }),
@@ -210,12 +210,53 @@ export default function Home() {
           setApiRuns(await runsResponse.json());
           setApiConnected(true);
         }
-      } catch { if (active) setApiConnected(false); }
+      } catch {
+        if (active) {
+          sessionStorage.removeItem("relayflow-token");
+          setApiConnected(false);
+          setAuthenticated(false);
+          setLoginError("Your session expired. Please sign in again.");
+        }
+      }
     };
     refresh();
     const timer = window.setInterval(refresh, 5000);
     return () => { active = false; window.clearInterval(timer); };
-  }, []);
+  }, [authenticated]);
+
+  const login = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const api = process.env.NEXT_PUBLIC_RELAYFLOW_API_URL || "http://localhost:8000";
+    setLoginLoading(true);
+    setLoginError("");
+    try {
+      const response = await fetch(`${api}/api/v1/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: loginEmail.trim(), password: loginPassword }),
+      });
+      if (!response.ok) {
+        throw new Error(response.status === 401 ? "Invalid email or password." : "Unable to sign in right now.");
+      }
+      const payload = await response.json();
+      sessionStorage.setItem("relayflow-token", payload.access_token);
+      setAuthenticated(true);
+      setLoginPassword("");
+    } catch (error) {
+      setLoginError(error instanceof Error ? error.message : "Unable to sign in.");
+    } finally {
+      setLoginLoading(false);
+    }
+  };
+
+  const logout = () => {
+    sessionStorage.removeItem("relayflow-token");
+    setApiConnected(false);
+    setDashboard(null);
+    setApiRuns([]);
+    setAuthenticated(false);
+    setProfileOpen(false);
+  };
 
   const displayRuns = apiConnected && apiRuns.length ? apiRuns.map((run) => ({
     id: `#${run.id.slice(0, 8)}`, workflow: run.workflow_id.slice(0, 12),
@@ -263,7 +304,45 @@ export default function Home() {
     { id: "workers" as View, label: "Workers", icon: Server },
   ];
 
-  if (signedOut) return <main className="signed-out"><section><div className="brand-mark"><Command/></div><h1>You’re signed out</h1><p>Your workflows are safe. Sign in to return to the RelayFlow control center.</p><button className="primary" onClick={() => setSignedOut(false)}>Sign back in</button></section></main>;
+  if (!authChecked) return null;
+
+  if (!authenticated) return (
+    <main className="signed-out">
+      <section>
+        <div className="brand-mark"><Command /></div>
+        <h1>Sign in to RelayFlow</h1>
+        <p>Use your RelayFlow account to access the control center.</p>
+        <form onSubmit={login} style={{ display: "grid", gap: 14, width: "min(360px, 100%)", marginTop: 24 }}>
+          <label style={{ display: "grid", gap: 7, textAlign: "left", fontSize: 13 }}>
+            Email address
+            <input
+              type="email"
+              autoComplete="username"
+              value={loginEmail}
+              onChange={(event) => setLoginEmail(event.target.value)}
+              required
+              style={{ minHeight: 44, border: "1px solid #dfe2ec", borderRadius: 9, padding: "0 12px" }}
+            />
+          </label>
+          <label style={{ display: "grid", gap: 7, textAlign: "left", fontSize: 13 }}>
+            Password
+            <input
+              type="password"
+              autoComplete="current-password"
+              value={loginPassword}
+              onChange={(event) => setLoginPassword(event.target.value)}
+              required
+              style={{ minHeight: 44, border: "1px solid #dfe2ec", borderRadius: 9, padding: "0 12px" }}
+            />
+          </label>
+          {loginError && <p role="alert" style={{ color: "#c53030", margin: 0, fontSize: 13 }}>{loginError}</p>}
+          <button className="primary" type="submit" disabled={loginLoading}>
+            {loginLoading ? "Signing inâ€¦" : "Sign in"}
+          </button>
+        </form>
+      </section>
+    </main>
+  );
 
   return (
     <main className={`app-shell ${darkMode ? "theme-dark" : ""}`}>
@@ -283,13 +362,13 @@ export default function Home() {
         </nav>
         <div className="system-card"><div><span className="pulse" /><strong>All systems operational</strong></div><small>Last checked 8s ago</small></div>
         <div className="profile-wrap"><div className="profile"><span className="profile-avatar">SS</span><div><strong>{displayName}</strong><small>Administrator</small></div><button className="profile-menu-button" onClick={() => setProfileOpen(!profileOpen)} aria-label="Open profile menu" aria-expanded={profileOpen}><MoreHorizontal size={18}/></button></div>
-          {profileOpen && <div className="profile-menu"><div className="profile-menu-head"><span className="profile-avatar">SS</span><div><strong>{displayName} Sharma</strong><small>shaambhavi03@gmail.com</small></div></div><button onClick={() => { setProfileModal(true); setProfileOpen(false); }}><UserRound size={15}/><span>View profile</span></button><button onClick={() => { setView("settings"); setProfileOpen(false); }}><Settings size={15}/><span>Account settings</span></button><button onClick={() => setDarkMode(!darkMode)}>{darkMode ? <Sun size={15}/> : <Moon size={15}/>}<span>{darkMode ? "Use light theme" : "Use dark theme"}</span><em>{darkMode ? "Light" : "Dark"}</em></button><hr/><button className="sign-out" onClick={() => setSignedOut(true)}><LogOut size={15}/><span>Sign out</span></button></div>}
+          {profileOpen && <div className="profile-menu"><div className="profile-menu-head"><span className="profile-avatar">SS</span><div><strong>{displayName} Sharma</strong><small>shaambhavi03@gmail.com</small></div></div><button onClick={() => { setProfileModal(true); setProfileOpen(false); }}><UserRound size={15}/><span>View profile</span></button><button onClick={() => { setView("settings"); setProfileOpen(false); }}><Settings size={15}/><span>Account settings</span></button><button onClick={() => setDarkMode(!darkMode)}>{darkMode ? <Sun size={15}/> : <Moon size={15}/>}<span>{darkMode ? "Use light theme" : "Use dark theme"}</span><em>{darkMode ? "Light" : "Dark"}</em></button><hr/><button className="sign-out" onClick={logout}><LogOut size={15}/><span>Sign out</span></button></div>}
         </div>
       </aside>
 
       <section className="content">
         <header>
-          <div className="global-search"><Search size={17} /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search runs, workflows..." /><kbd>⌘ K</kbd></div>
+          <div className="global-search"><Search size={17} /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search runs, workflows..." /><kbd>âŒ˜ K</kbd></div>
           <button className="icon-button" aria-label="Notifications"><Bell size={19} /><i /></button>
           <button className="primary" onClick={() => setBuilderOpen(true)}><Plus size={17} />New workflow</button>
         </header>
@@ -303,16 +382,16 @@ export default function Home() {
               <article className="panel throughput"><div className="panel-head"><div><h2>Workflow throughput</h2><p>Successful runs over the last 24 hours</p></div><button>Last 24 hours <ChevronDown size={14} /></button></div><div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><AreaChart data={chartData}><defs><linearGradient id="relayFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#6677f4" stopOpacity={0.28}/><stop offset="100%" stopColor="#6677f4" stopOpacity={0}/></linearGradient></defs><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e8eaf2"/><XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fill: "#8a8fa5", fontSize: 11 }}/><YAxis axisLine={false} tickLine={false} tick={{ fill: "#8a8fa5", fontSize: 11 }}/><Tooltip contentStyle={{ borderRadius: 10, border: "1px solid #e7e9f1", boxShadow: "0 10px 28px rgba(24,29,55,.12)" }}/><Area type="monotone" dataKey="runs" stroke="#6677f4" strokeWidth={2.5} fill="url(#relayFill)"/></AreaChart></ResponsiveContainer></div></article>
               <article className="panel queue"><div className="panel-head"><div><h2>Queue health</h2><p>Current task distribution</p></div><Activity size={18}/></div><div className="queue-ring"><div><strong>{dashboard ? Object.values(dashboard.queue).reduce((sum, value) => sum + value, 0) : 54}</strong><span>Total jobs</span></div></div><div className="queue-legend"><p><i className="queued"/>Queued <b>{dashboard?.queue.pending ?? 41}</b></p><p><i className="running"/>Running <b>{dashboard?.queue.running ?? 6}</b></p><p><i className="retry"/>Retrying <b>{dashboard?.queue.retrying ?? 5}</b></p><p><i className="dead"/>Dead letter <b>{dashboard?.queue.dead_letter ?? 2}</b></p></div></article>
             </div>
-            <article className="panel graph-panel"><div className="panel-head"><div><h2>Live execution <span>#RF-5241</span></h2><p>Order fulfillment · started 38 seconds ago</p></div><button onClick={() => setView("runs")}>View details</button></div><div className="graph"><ReactFlow nodes={graphNodes} edges={graphEdges} nodeTypes={nodeTypes} fitView proOptions={{ hideAttribution: true }} nodesDraggable={false} nodesConnectable={false}><Background color="#dfe2ec" gap={18}/><Controls showInteractive={false}/></ReactFlow></div></article>
+            <article className="panel graph-panel"><div className="panel-head"><div><h2>Live execution <span>#RF-5241</span></h2><p>Order fulfillment Â· started 38 seconds ago</p></div><button onClick={() => setView("runs")}>View details</button></div><div className="graph"><ReactFlow nodes={graphNodes} edges={graphEdges} nodeTypes={nodeTypes} fitView proOptions={{ hideAttribution: true }} nodesDraggable={false} nodesConnectable={false}><Background color="#dfe2ec" gap={18}/><Controls showInteractive={false}/></ReactFlow></div></article>
             <RunTable runs={visibleRuns} onSelect={setSelectedRun} />
           </>}
 
           {view === "workflows" && <div className="workflow-grid">{workflowList.map((workflow) => <article className="workflow-card" key={workflow.name}><div className="workflow-top"><span><GitBranch size={20}/></span><Status value={workflow.active ? "Active" : "Paused"}/><button><MoreHorizontal size={18}/></button></div><h2>{workflow.name}</h2><p>{workflow.description}</p><div className="workflow-stats"><span><b>{workflow.tasks}</b> tasks</span><span><b>{workflow.runs.toLocaleString()}</b> runs</span><span><b>{workflow.success}</b> success</span></div><button className="secondary" onClick={() => setBuilderOpen(true)}>Open workflow</button></article>)}</div>}
           {view === "runs" && <><div className="run-summary"><div><Clock3/><span><b>14.8s</b>Avg. duration</span></div><div><Boxes/><span><b>1,284</b>Runs today</span></div><div><CircleDot/><span><b>7</b>Retries</span></div><div><TerminalSquare/><span><b>2</b>Failed</span></div></div><RunTable runs={visibleRuns} onSelect={setSelectedRun}/></>}
-          {view === "workers" && <article className="panel worker-table"><div className="panel-head"><div><h2>Execution nodes</h2><p>Heartbeats update every five seconds</p></div><button>Auto refresh</button></div>{displayWorkers.map((worker) => <div className="worker-row" key={worker.name}><div className="worker-name"><span className={`worker-dot ${worker.status.toLowerCase()}`}/><div><strong>{worker.name}</strong><small>distributed · python-3.12</small></div></div><Status value={worker.status}/><span><b>{worker.jobs}</b> jobs</span><div className="cpu"><span><i style={{width: `${worker.cpu}%`}}/></span>{worker.cpu}% CPU</div><small>{worker.heartbeat}</small><MoreHorizontal size={18}/></div>)}</article>}
+          {view === "workers" && <article className="panel worker-table"><div className="panel-head"><div><h2>Execution nodes</h2><p>Heartbeats update every five seconds</p></div><button>Auto refresh</button></div>{displayWorkers.map((worker) => <div className="worker-row" key={worker.name}><div className="worker-name"><span className={`worker-dot ${worker.status.toLowerCase()}`}/><div><strong>{worker.name}</strong><small>distributed Â· python-3.12</small></div></div><Status value={worker.status}/><span><b>{worker.jobs}</b> jobs</span><div className="cpu"><span><i style={{width: `${worker.cpu}%`}}/></span>{worker.cpu}% CPU</div><small>{worker.heartbeat}</small><MoreHorizontal size={18}/></div>)}</article>}
           {view === "team" && <section className="team-view">
             <div className="team-summary"><article><Users/><div><strong>4</strong><span>Total members</span></div></article><article><ShieldCheck/><div><strong>1</strong><span>Administrator</span></div></article><article><Mail/><div><strong>1</strong><span>Pending invite</span></div></article><button className="primary" onClick={() => setInviteOpen(true)}><UserPlus size={17}/>Invite member</button></div>
-            <article className="panel members-panel"><div className="panel-head"><div><h2>Workspace members</h2><p>People with access to {activeWorkspace.name}</p></div><div className="member-search"><Search size={15}/><input placeholder="Search members..."/></div></div><div className="member-row member-header"><span>Member</span><span>Role</span><span>Status</span><span>Last active</span><span/></div>{teamMembers.map((member, index) => <div className="member-row" key={member.email}><div className={`member-avatar avatar-${index}`}>{member.initials}</div><div className="member-identity"><strong>{member.name}</strong><small>{member.email}</small></div><select defaultValue={member.role} aria-label={`${member.name} role`}><option>Admin</option><option>Developer</option><option>Viewer</option></select><Status value={member.status}/><span>{member.status === "Invited" ? "—" : index === 0 ? "Now" : `${index * 3}h ago`}</span><button aria-label={`More options for ${member.name}`}><MoreHorizontal size={17}/></button></div>)}</article>
+            <article className="panel members-panel"><div className="panel-head"><div><h2>Workspace members</h2><p>People with access to {activeWorkspace.name}</p></div><div className="member-search"><Search size={15}/><input placeholder="Search members..."/></div></div><div className="member-row member-header"><span>Member</span><span>Role</span><span>Status</span><span>Last active</span><span/></div>{teamMembers.map((member, index) => <div className="member-row" key={member.email}><div className={`member-avatar avatar-${index}`}>{member.initials}</div><div className="member-identity"><strong>{member.name}</strong><small>{member.email}</small></div><select defaultValue={member.role} aria-label={`${member.name} role`}><option>Admin</option><option>Developer</option><option>Viewer</option></select><Status value={member.status}/><span>{member.status === "Invited" ? "â€”" : index === 0 ? "Now" : `${index * 3}h ago`}</span><button aria-label={`More options for ${member.name}`}><MoreHorizontal size={17}/></button></div>)}</article>
           </section>}
           {view === "settings" && <section className="settings-view">
             {saved && <div className="save-banner"><CircleCheck size={17}/>Settings saved successfully.<button onClick={() => setSaved(false)}><X size={15}/></button></div>}
@@ -326,7 +405,7 @@ export default function Home() {
 
       {builderOpen && <div className="modal-backdrop" onMouseDown={() => setBuilderOpen(false)}><section className="builder" onMouseDown={(e) => e.stopPropagation()}><div className="builder-head"><div><span className="builder-icon"><Workflow/></span><div><h2>Create workflow</h2><p>Build a durable task dependency graph</p></div></div><button onClick={() => setBuilderOpen(false)}><X/></button></div><label>Workflow name<input value={workflowName} onChange={(event) => setWorkflowName(event.target.value)} /></label><label>Description<textarea value={workflowDescription} onChange={(event) => setWorkflowDescription(event.target.value)} /></label><div className="task-label"><span>Tasks</span><button onClick={() => setTasks([...tasks, { name: "Notify team", dependency: tasks.at(-1)?.name || "None", action: "Webhook" }])}><Plus size={15}/>Add task</button></div><div className="task-list">{tasks.map((task, index) => <div className="task-item" key={`${task.name}-${index}`}><span className="step">{index + 1}</span><label>Name<input value={task.name} onChange={(e) => setTasks(tasks.map((t, i) => i === index ? {...t, name: e.target.value} : t))}/></label><label>Depends on<select value={task.dependency} onChange={(e) => setTasks(tasks.map((t, i) => i === index ? {...t, dependency: e.target.value} : t))}><option>None</option>{tasks.slice(0,index).map((t)=><option key={t.name}>{t.name}</option>)}</select></label><label>Action<select value={task.action} onChange={(e) => setTasks(tasks.map((t, i) => i === index ? {...t, action: e.target.value} : t))}><option>API call</option><option>Transform</option><option>Delay</option><option>Email</option><option>Webhook</option></select></label></div>)}</div><div className="builder-actions"><button className="secondary" onClick={() => setBuilderOpen(false)}>Cancel</button><button className="primary" onClick={createWorkflow}><CircleCheck size={17}/>Create workflow</button></div></section></div>}
 
-      {selectedRun && <div className="drawer-backdrop" onClick={() => setSelectedRun(null)}><aside className="run-drawer" onClick={(e) => e.stopPropagation()}><div className="drawer-head"><div><small>Execution</small><h2>{selectedRun.id}</h2></div><button onClick={() => setSelectedRun(null)}><X/></button></div><div className="drawer-workflow"><Workflow/><div><strong>{selectedRun.workflow}</strong><span>Triggered by API · {selectedRun.time}</span></div><Status value={selectedRun.status}/></div><div className="detail-grid"><span>Duration<b>{selectedRun.duration}</b></span><span>Tasks<b>{selectedRun.tasks}</b></span><span>Worker<b>{selectedRun.worker}</b></span><span>Retries<b>{selectedRun.status === "Retrying" ? "1" : "0"}</b></span></div><h3>Live logs</h3><div className="logs"><p><time>10:02:01</time><span className="info">INFO</span>Run accepted by scheduler</p><p><time>10:02:02</time><span className="info">INFO</span>Task validate_order started</p><p><time>10:02:03</time><span className="good">DONE</span>Schema validation completed</p><p><time>10:02:04</time><span className="info">INFO</span>Inventory reservation started</p><p><time>10:02:08</time><span className="good">DONE</span>12 units reserved</p><p><time>10:02:09</time><span className="wait">WAIT</span>Processing payment...</p><span className="log-cursor"/></div></aside></div>}
+      {selectedRun && <div className="drawer-backdrop" onClick={() => setSelectedRun(null)}><aside className="run-drawer" onClick={(e) => e.stopPropagation()}><div className="drawer-head"><div><small>Execution</small><h2>{selectedRun.id}</h2></div><button onClick={() => setSelectedRun(null)}><X/></button></div><div className="drawer-workflow"><Workflow/><div><strong>{selectedRun.workflow}</strong><span>Triggered by API Â· {selectedRun.time}</span></div><Status value={selectedRun.status}/></div><div className="detail-grid"><span>Duration<b>{selectedRun.duration}</b></span><span>Tasks<b>{selectedRun.tasks}</b></span><span>Worker<b>{selectedRun.worker}</b></span><span>Retries<b>{selectedRun.status === "Retrying" ? "1" : "0"}</b></span></div><h3>Live logs</h3><div className="logs"><p><time>10:02:01</time><span className="info">INFO</span>Run accepted by scheduler</p><p><time>10:02:02</time><span className="info">INFO</span>Task validate_order started</p><p><time>10:02:03</time><span className="good">DONE</span>Schema validation completed</p><p><time>10:02:04</time><span className="info">INFO</span>Inventory reservation started</p><p><time>10:02:08</time><span className="good">DONE</span>12 units reserved</p><p><time>10:02:09</time><span className="wait">WAIT</span>Processing payment...</p><span className="log-cursor"/></div></aside></div>}
       {inviteOpen && <div className="center-modal-backdrop" onMouseDown={() => setInviteOpen(false)}><section className="invite-modal" onMouseDown={(e) => e.stopPropagation()}><div className="builder-head"><div><span className="builder-icon"><UserPlus/></span><div><h2>Invite team member</h2><p>Add someone to {activeWorkspace.name}</p></div></div><button onClick={() => setInviteOpen(false)}><X/></button></div><label>Email address<input type="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} placeholder="teammate@company.com"/></label><label>Role<select defaultValue="Developer"><option>Admin</option><option>Developer</option><option>Viewer</option></select></label><div className="builder-actions"><button className="secondary" onClick={() => setInviteOpen(false)}>Cancel</button><button className="primary" disabled={!inviteEmail.includes("@")} onClick={() => { setInviteEmail(""); setInviteOpen(false); }}><Mail size={16}/>Send invitation</button></div></section></div>}
       {profileModal && <div className="center-modal-backdrop" onMouseDown={() => setProfileModal(false)}><section className="invite-modal profile-modal" onMouseDown={(e) => e.stopPropagation()}><div className="builder-head"><div><span className="profile-avatar large">SS</span><div><h2>Your profile</h2><p>Personal details shown across RelayFlow</p></div></div><button onClick={() => setProfileModal(false)}><X/></button></div><label>Display name<input value={displayName} onChange={(e) => setDisplayName(e.target.value)}/></label><label>Email address<input value="shaambhavi03@gmail.com" disabled/></label><label>Role<input value="Administrator" disabled/></label><div className="builder-actions"><button className="secondary" onClick={() => setProfileModal(false)}>Cancel</button><button className="primary" onClick={() => setProfileModal(false)}><CircleCheck size={16}/>Save profile</button></div></section></div>}
     </main>
